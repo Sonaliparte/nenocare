@@ -62,7 +62,7 @@ Ensure you have a `.env` file in your root workspace containing the following co
 ANTHROPIC_API_KEY=your-claude-api-key-here
 NEO4J_URI=bolt://localhost:7687
 NEO4J_USERNAME=neo4j
-NEO4J_PASSWORD=password123
+NEO4J_PASSWORD=yourpassword
 ```
 
 ---
