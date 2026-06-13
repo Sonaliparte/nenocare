@@ -1,12 +1,12 @@
 import React, { useState, useEffect } from 'react';
-import { Database, RefreshCw, Layers, ShieldCheck, Play, AlertCircle } from 'lucide-react';
+import { Database, RefreshCw, Layers, ShieldCheck, Activity, Search, Code, MessageSquare, AlertCircle, FileText } from 'lucide-react';
 import StatsCards from './components/StatsCards';
 import GraphVisualizer from './components/GraphVisualizer';
 import CypherPanel from './components/CypherPanel';
 import SemanticSearch from './components/SemanticSearch';
 import AIChat from './components/AIChat';
+import './App.css';
 
-// Backend URL can be parameterized; defaults to FastAPI port 8000
 const BACKEND_URL = "http://localhost:8000";
 
 export default function App() {
@@ -16,6 +16,7 @@ export default function App() {
   const [highlightNodes, setHighlightNodes] = useState(new Set());
   const [highlightLinks, setHighlightLinks] = useState(new Set());
   const [selectedSubPanelTitle, setSelectedSubPanelTitle] = useState("Full Database Graph");
+  const [activeTab, setActiveTab] = useState("graph"); // "graph", "search", "queries", "chat"
   
   const [loading, setLoading] = useState(false);
   const [seeding, setSeeding] = useState(false);
@@ -41,20 +42,25 @@ export default function App() {
       const graphRes = await fetch(`${BACKEND_URL}/graph/full`);
       if (!graphRes.ok) throw new Error("Could not retrieve graph from Neo4j. Is database running?");
       const graphData = await graphRes.json();
-      setFullGraph(graphData);
+      const safeGraphData = {
+        nodes: graphData?.nodes ?? [],
+        links: graphData?.links ?? []
+      };
+      setFullGraph(safeGraphData);
       
       // Default active graph view is the full database
-      setActiveGraph(graphData);
+      setActiveGraph(safeGraphData);
       setSelectedSubPanelTitle("Full Database Graph");
 
       // 2. Fetch drug conflicts
       const conflictRes = await fetch(`${BACKEND_URL}/alerts/drug-conflicts`);
+      if (!conflictRes.ok) throw new Error("Could not retrieve conflicts.");
       const conflictData = await conflictRes.json();
-      const conflictList = conflictData?.table || conflictData?.conflicts || conflictData?.data || (Array.isArray(conflictData) ? conflictData : []);
+      const conflictList = conflictData?.table || conflictData?.conflicts || conflictData?.data?.conflicts || conflictData?.data || (Array.isArray(conflictData) ? conflictData : []);
       setConflicts(conflictList);
 
       // 3. Compute stats
-      computeStats(graphData, conflictList);
+      computeStats(safeGraphData, conflictList);
     } catch (err) {
       console.error(err);
       setError(err.message);
@@ -64,8 +70,9 @@ export default function App() {
   };
 
   const computeStats = (graph, conflictList) => {
-    const nodes = graph?.nodes || [];
-    const links = graph?.links || [];
+    const nodes = graph?.nodes ?? [];
+    const links = graph?.links ?? [];
+    const safeConflicts = conflictList ?? [];
 
     const patients = nodes.filter(n => n && n.group === 'Patient').length;
     const prescriptions = links.filter(l => l && l.type === 'PRESCRIBED').length;
@@ -93,7 +100,7 @@ export default function App() {
     setStats({
       totalPatients: patients,
       totalPrescriptions: prescriptions,
-      activeConflicts: conflictList?.length || 0,
+      activeConflicts: safeConflicts.length,
       mostCommonDisease: topDisease
     });
   };
@@ -116,17 +123,20 @@ export default function App() {
   // Callback when a Cypher query or semantic search executes
   const handleGraphDataResult = (graphData, tableData, sourceTitle) => {
     const safeGraph = {
-      nodes: graphData?.nodes || [],
-      links: graphData?.links || []
+      nodes: graphData?.nodes ?? [],
+      links: graphData?.links ?? []
     };
     setActiveGraph(safeGraph);
     setSelectedSubPanelTitle(sourceTitle);
 
     // Extract highlight sets
-    const nodeIds = new Set(safeGraph.nodes.map(n => n && n.id).filter(Boolean));
+    const nodeIds = new Set(safeGraph.nodes.map(n => n?.id).filter(Boolean));
     const linkIds = new Set(safeGraph.links.map(l => l && `${l.source}-${l.target}-${l.type}`).filter(Boolean));
     setHighlightNodes(nodeIds);
     setHighlightLinks(linkIds);
+    
+    // Auto shift to Graph tab to show results
+    setActiveTab("graph");
   };
 
   // Clicking the "Conflict Alerts" card filters visualizer to show conflict paths
@@ -137,9 +147,9 @@ export default function App() {
     const conflictLinks = new Set();
     
     const nodesMap = {};
-    const nodes = fullGraph?.nodes || [];
-    const links = fullGraph?.links || [];
-    nodes.forEach(n => { if (n) nodesMap[n.id] = n; });
+    const nodes = fullGraph?.nodes ?? [];
+    const links = fullGraph?.links ?? [];
+    nodes.forEach(n => { if (n && n.id) nodesMap[n.id] = n; });
 
     // Filter full graph for conflict paths
     const filteredLinks = [];
@@ -159,60 +169,63 @@ export default function App() {
       // Extract path links
       links.forEach(l => {
         if (!l) return;
-        const sourceId = typeof l.source === 'object' ? l.source.id : l.source;
-        const targetId = typeof l.target === 'object' ? l.target.id : l.target;
+        const sourceId = typeof l.source === 'object' ? l.source?.id : l.source;
+        const targetId = typeof l.target === 'object' ? l.target?.id : l.target;
 
-        // Link from patient to medicine or disease
-        if (sourceId === patient?.id && (targetId === medicine?.id || targetId === disease?.id)) {
-          filteredLinks.push(l);
-          conflictLinks.add(`${sourceId}-${targetId}-${l.type}`);
-        }
-        // Link from medicine/disease contraindication
-        if ((sourceId === medicine?.id && targetId === disease?.id) || (sourceId === disease?.id && targetId === medicine?.id)) {
-          filteredLinks.push(l);
-          conflictLinks.add(`${sourceId}-${targetId}-${l.type}`);
-        }
-        // Check drug-drug conflicts
-        const otherMeds = nodes.filter(n => n && n.group === 'Medicine');
-        otherMeds.forEach(m2 => {
-          if (m2 && sourceId === medicine?.id && targetId === m2.id) {
-            // Check if patient takes both
-            const hasMed2 = links.some(x => {
-              if (!x) return false;
-              const xSourceId = typeof x.source === 'object' ? x.source.id : x.source;
-              const xTargetId = typeof x.target === 'object' ? x.target.id : x.target;
-              return xSourceId === patient?.id && xTargetId === m2.id;
-            });
-            if (hasMed2) {
-              filteredNodes.add(m2);
-              filteredLinks.push(l);
-              conflictLinks.add(`${sourceId}-${targetId}-${l.type}`);
-            }
+        if (sourceId && targetId) {
+          // Link from patient to medicine or disease
+          if (sourceId === patient?.id && (targetId === medicine?.id || targetId === disease?.id)) {
+            filteredLinks.push(l);
+            conflictLinks.add(`${sourceId}-${targetId}-${l.type}`);
           }
-        });
+          // Link from medicine/disease contraindication
+          if ((sourceId === medicine?.id && targetId === disease?.id) || (sourceId === disease?.id && targetId === medicine?.id)) {
+            filteredLinks.push(l);
+            conflictLinks.add(`${sourceId}-${targetId}-${l.type}`);
+          }
+          // Check drug-drug conflicts
+          const otherMeds = nodes.filter(n => n && n.group === 'Medicine');
+          otherMeds.forEach(m2 => {
+            if (m2 && sourceId === medicine?.id && targetId === m2.id) {
+              // Check if patient takes both
+              const hasMed2 = links.some(x => {
+                if (!x) return false;
+                const xSourceId = typeof x.source === 'object' ? x.source?.id : x.source;
+                const xTargetId = typeof x.target === 'object' ? x.target?.id : x.target;
+                return xSourceId === patient?.id && xTargetId === m2.id;
+              });
+              if (hasMed2) {
+                filteredNodes.add(m2);
+                filteredLinks.push(l);
+                conflictLinks.add(`${sourceId}-${targetId}-${l.type}`);
+              }
+            }
+          });
+        }
       });
     });
 
     const activeConflictGraph = {
-      nodes: Array.from(filteredNodes),
-      links: filteredLinks
+      nodes: Array.from(filteredNodes).filter(Boolean),
+      links: filteredLinks.filter(Boolean)
     };
 
     setActiveGraph(activeConflictGraph);
     setSelectedSubPanelTitle("Active Drug & Disease Conflict Paths");
-    setHighlightNodes(new Set(activeConflictGraph.nodes.map(n => n.id)));
+    setHighlightNodes(new Set(activeConflictGraph.nodes.map(n => n?.id).filter(Boolean)));
     setHighlightLinks(conflictLinks);
+    
+    // Switch to Graph tab to visualize
+    setActiveTab("graph");
   };
 
   // Clicking "Analyze with Claude" in Semantic search sends disease context to Chat
   const handleSendToChat = (diseaseRecord) => {
     if (!diseaseRecord || !diseaseRecord.disease_name) return;
-    // We send a custom prompt to trigger a message in the chat
-    const prompt = `Analyze risks and medical treatments associated with: ${diseaseRecord.disease_name}.`;
     
     // Find disease node in fullGraph
-    const nodes = fullGraph?.nodes || [];
-    const links = fullGraph?.links || [];
+    const nodes = fullGraph?.nodes ?? [];
+    const links = fullGraph?.links ?? [];
     const diseaseNode = nodes.find(n => n && n.label === diseaseRecord.disease_name);
     if (diseaseNode) {
       // Gather disease 1-step neighborhood (symptoms, treating doctors, prescribed patients)
@@ -221,14 +234,14 @@ export default function App() {
       
       links.forEach(l => {
         if (!l) return;
-        const sourceId = typeof l.source === 'object' ? l.source.id : l.source;
-        const targetId = typeof l.target === 'object' ? l.target.id : l.target;
+        const sourceId = typeof l.source === 'object' ? l.source?.id : l.source;
+        const targetId = typeof l.target === 'object' ? l.target?.id : l.target;
 
         if (sourceId === diseaseNode.id) {
-          neighborNodeIds.add(targetId);
+          if (targetId) neighborNodeIds.add(targetId);
           neighborLinks.push(l);
         } else if (targetId === diseaseNode.id) {
-          neighborNodeIds.add(sourceId);
+          if (sourceId) neighborNodeIds.add(sourceId);
           neighborLinks.push(l);
         }
       });
@@ -242,64 +255,122 @@ export default function App() {
       setSelectedSubPanelTitle(`Context: ${diseaseRecord.disease_name}`);
       setHighlightNodes(new Set([diseaseNode.id]));
       setHighlightLinks(new Set(neighborLinks.map(l => {
-        const s = typeof l.source === 'object' ? l.source.id : l.source;
-        const t = typeof l.target === 'object' ? l.target.id : l.target;
+        const s = typeof l.source === 'object' ? l.source?.id : l.source;
+        const t = typeof l.target === 'object' ? l.target?.id : l.target;
         return `${s}-${t}-${l.type}`;
-      })));
+      }).filter(Boolean)));
+      
+      // Auto shift to AI Assistant
+      setActiveTab("chat");
     }
   };
 
+  const handleExportReport = () => {
+    let reportText = `NENOCARE HEALTHCARE CLINICAL STATUS REPORT\n`;
+    reportText += `Generated on: ${new Date().toLocaleString()}\n`;
+    reportText += `=========================================================\n\n`;
+    
+    reportText += `DATABASE STATS:\n`;
+    reportText += `- Total Patients: ${stats.totalPatients}\n`;
+    reportText += `- Total Prescriptions: ${stats.totalPrescriptions}\n`;
+    reportText += `- Active Drug Conflicts: ${stats.activeConflicts}\n`;
+    reportText += `- Most Common Disease: ${stats.mostCommonDisease}\n\n`;
+    
+    reportText += `=========================================================\n`;
+    reportText += `ACTIVE DRUG & DISEASE CONFLICTS DETAILS:\n`;
+    if (conflicts && conflicts.length > 0) {
+      conflicts.forEach((c, idx) => {
+        reportText += `\nConflict Alert #${idx + 1}:\n`;
+        reportText += `  - Patient Name: ${c.patient_name}\n`;
+        reportText += `  - Medicine Prescribed: ${c.medicine_name}\n`;
+        reportText += `  - Conflicting Disease Diagnosed: ${c.conflicting_disease}\n`;
+      });
+    } else {
+      reportText += `No active drug/disease conflicts detected in the system.\n`;
+    }
+    reportText += `\n=========================================================\n`;
+    reportText += `Grounded GraphRAG Hallucination Prevention System Active.\n`;
+    
+    const blob = new Blob([reportText], { type: 'text/plain;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `NenoCare_Clinical_Report_${new Date().toISOString().split('T')[0]}.txt`;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+  };
+
   return (
-    <div style={{ padding: '24px', maxWidth: '1440px', margin: '0 auto', display: 'flex', flexDirection: 'column', gap: '20px' }}>
+    <div style={{ padding: '24px 32px', maxWidth: '1440px', margin: '0 auto', display: 'flex', flexDirection: 'column', gap: '20px' }}>
       
-      {/* Header Panel */}
-      <div className="glass-panel" style={{
+      {/* Top Hero Header Panel */}
+      <div className="medical-card" style={{
         display: 'flex',
         justifyContent: 'space-between',
         alignItems: 'center',
-        padding: '16px 24px',
+        padding: '20px 24px',
         flexWrap: 'wrap',
-        gap: '12px',
-        background: 'linear-gradient(90deg, rgba(10,14,26,0.85) 0%, rgba(0,212,255,0.05) 100%)',
-        border: '1px solid rgba(0, 212, 255, 0.25)'
+        gap: '16px',
+        borderLeft: '5px solid var(--primary-navy)',
+        background: '#FFFFFF'
       }}>
         <div>
-          <h1 className="glow-text-blue" style={{
-            fontSize: '20px',
+          <h1 style={{
+            fontSize: '24px',
             fontWeight: 800,
-            color: '#FFF',
+            color: 'var(--primary-navy)',
             display: 'flex',
             alignItems: 'center',
-            gap: '10px',
-            letterSpacing: '-0.02em'
+            gap: '12px',
+            letterSpacing: '-0.02em',
+            margin: 0
           }}>
-            <Database size={24} color="var(--accent-blue)" />
-            Healthcare Knowledge Graph Explorer
-            <span style={{ fontSize: '11px', fontWeight: 500, color: 'var(--text-secondary)', padding: '2px 8px', background: 'rgba(255,255,255,0.05)', borderRadius: '4px', border: '1px solid rgba(255,255,255,0.08)' }}>GraphRAG</span>
+            <Database size={28} color="var(--primary-navy)" />
+            NenoCare GraphRAG
+            <span style={{ 
+              fontSize: '11px', 
+              fontWeight: 700, 
+              color: 'var(--accent-green)', 
+              padding: '3px 10px', 
+              background: 'var(--accent-green-light)', 
+              borderRadius: '99px',
+              border: '1px solid rgba(0, 168, 120, 0.15)'
+            }}>
+              Clinical Explorer
+            </span>
           </h1>
-          <p style={{ fontSize: '12px', color: 'var(--text-secondary)', marginTop: '4px' }}>
-            Semantic search and Neo4j relational logic grounded with Claude 3.5 Sonnet analysis
+          <p style={{ fontSize: '13px', color: 'var(--text-muted)', marginTop: '4px', fontWeight: 500 }}>
+            AI-Powered Patient Knowledge Graph & Safe Grounded Reasoning Engine
           </p>
         </div>
 
-        <div style={{ display: 'flex', gap: '10px' }}>
+        <div style={{ display: 'flex', gap: '12px', alignItems: 'center' }}>
           <button 
-            className="btn-outline" 
+            className="btn-med-outline" 
             onClick={fetchMetadata}
             disabled={loading}
-            style={{ fontSize: '12px' }}
           >
             <RefreshCw size={14} className={loading ? "animate-pulse" : ""} />
-            Reload Graph
+            Refresh
           </button>
+          
           <button 
-            className="btn-primary animate-pulse" 
+            className="btn-med-primary" 
+            onClick={handleExportReport}
+          >
+            <FileText size={14} />
+            Export Report
+          </button>
+          
+          <button 
+            className="btn-med-danger" 
             onClick={handleSeedDatabase}
             disabled={seeding}
-            style={{ fontSize: '12px', background: 'linear-gradient(135deg, #FF4757 0%, #FF6B81 100%)', color: '#FFF' }}
           >
             <Layers size={14} />
-            {seeding ? "Seeding..." : "Reset & Seed DB"}
+            {seeding ? "Rebuilding..." : "Reset Database"}
           </button>
         </div>
       </div>
@@ -307,86 +378,125 @@ export default function App() {
       {/* Main Connection Error Warning */}
       {error && (
         <div style={{
-          background: 'rgba(255, 71, 87, 0.1)',
-          border: '1px solid rgba(255, 71, 87, 0.3)',
+          background: 'var(--alert-red-light)',
+          border: '1.5px solid var(--alert-red)',
           color: 'var(--alert-red)',
-          borderRadius: '8px',
-          padding: '12px 18px',
-          fontSize: '13px',
+          borderRadius: '10px',
+          padding: '14px 20px',
+          fontSize: '14px',
           display: 'flex',
-          gap: '10px',
-          alignItems: 'center'
+          gap: '12px',
+          alignItems: 'center',
+          fontWeight: 500
         }}>
-          <AlertCircle size={18} />
+          <AlertCircle size={20} style={{ flexShrink: 0 }} />
           <div>
-            <strong>Database Connection Issue: </strong>
-            {error} Make sure Neo4j is running, your credentials in .env are correct, and backend is launched using `python -m backend.main`.
+            <strong>Database Connection Error: </strong>
+            {error} Ensure Neo4j is running, your environment credentials are correct, and the backend service is active.
           </div>
         </div>
       )}
 
-      {/* Main Grid Layout */}
-      <div style={{
-        display: 'grid',
-        gridTemplateColumns: 'repeat(12, 1fr)',
-        gap: '20px'
-      }}>
-        {/* Left Hand side Dashboard: Stats, visualizer and semantic search */}
-        <div style={{
-          gridColumn: window.innerWidth > 1024 ? 'span 7' : 'span 12',
-          display: 'flex',
-          flexDirection: 'column',
-          gap: '20px'
-        }}>
-          <StatsCards stats={stats} onConflictCardClick={handleShowConflictsInGraph} />
-          
-          <GraphVisualizer 
-            graphData={activeGraph} 
-            highlightNodes={highlightNodes}
-            highlightLinks={highlightLinks}
-            title={selectedSubPanelTitle}
-          />
-          
+      {/* Live Drug Conflict Alert Banner */}
+      {stats.activeConflicts > 0 && (
+        <div className="alert-banner" onClick={handleShowConflictsInGraph}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+            <AlertCircle size={18} />
+            <span>⚠️ {stats.activeConflicts} Drug Conflicts Detected in Database — Click to View conflict paths in graph</span>
+          </div>
+          <span style={{ fontSize: '12px', background: 'rgba(255,255,255,0.2)', padding: '2px 8px', borderRadius: '4px' }}>Analyze Now</span>
+        </div>
+      )}
+
+      {/* Hero Stats Panel */}
+      <StatsCards stats={stats} onConflictCardClick={handleShowConflictsInGraph} />
+
+      {/* Main Navigation Tabs */}
+      <div className="tab-container">
+        <button 
+          className={`tab-btn ${activeTab === 'graph' ? 'active' : ''}`}
+          onClick={() => setActiveTab('graph')}
+        >
+          <Activity size={16} />
+          Knowledge Graph
+        </button>
+        <button 
+          className={`tab-btn ${activeTab === 'search' ? 'active' : ''}`}
+          onClick={() => setActiveTab('search')}
+        >
+          <Search size={16} />
+          Patient Search
+        </button>
+        <button 
+          className={`tab-btn ${activeTab === 'queries' ? 'active' : ''}`}
+          onClick={() => setActiveTab('queries')}
+        >
+          <Code size={16} />
+          Clinical Queries
+        </button>
+        <button 
+          className={`tab-btn ${activeTab === 'chat' ? 'active' : ''}`}
+          onClick={() => setActiveTab('chat')}
+        >
+          <MessageSquare size={16} />
+          AI Assistant
+        </button>
+      </div>
+
+      {/* Tab Contents */}
+      <div style={{ minHeight: '520px' }}>
+        {activeTab === 'graph' && (
+          <div className="medical-card" style={{ padding: '0', overflow: 'hidden' }}>
+            <GraphVisualizer 
+              graphData={activeGraph} 
+              highlightNodes={highlightNodes}
+              highlightLinks={highlightLinks}
+              title={selectedSubPanelTitle}
+              onShowConflicts={handleShowConflictsInGraph}
+              conflicts={conflicts}
+            />
+          </div>
+        )}
+
+        {activeTab === 'search' && (
           <SemanticSearch 
             onSearchExecuted={handleGraphDataResult} 
             onSendToChat={handleSendToChat}
             backendUrl={BACKEND_URL}
           />
-        </div>
+        )}
 
-        {/* Right Hand side Dashboard: Cypher execution and AI Chat */}
-        <div style={{
-          gridColumn: window.innerWidth > 1024 ? 'span 5' : 'span 12',
-          display: 'flex',
-          flexDirection: 'column',
-          gap: '20px'
-        }}>
+        {activeTab === 'queries' && (
           <CypherPanel 
             onQueryExecuted={handleGraphDataResult} 
             backendUrl={BACKEND_URL}
           />
-          
+        )}
+
+        {activeTab === 'chat' && (
           <AIChat 
             graphContext={activeGraph} 
             backendUrl={BACKEND_URL}
+            onQuerySuggestion={handleGraphDataResult}
           />
-        </div>
+        )}
       </div>
 
-      {/* Footer prevention badge */}
+      {/* Safety Hallucination Prevention Footer */}
       <div style={{
         display: 'flex',
         alignItems: 'center',
         justifyContent: 'center',
         gap: '8px',
-        padding: '16px',
-        borderTop: '1px solid rgba(255,255,255,0.05)',
-        marginTop: '20px',
-        fontSize: '11px',
-        color: 'var(--text-muted)'
+        padding: '20px 0',
+        borderTop: '1px solid var(--border-color)',
+        marginTop: '24px',
+        fontSize: '12px',
+        color: 'var(--text-muted)',
+        fontWeight: 500
       }}>
-        <ShieldCheck size={14} color="var(--accent-blue)" />
-        <span>Grounded GraphRAG Framework - Hallucination Prevention System actively protecting Claude queries.</span>
+        <ShieldCheck size={16} color="var(--accent-green)" />
+        <span>Grounded GraphRAG Hallucination Prevention System Active. All analysis is verified against verified patient nodes.</span>
       </div>
 
     </div>

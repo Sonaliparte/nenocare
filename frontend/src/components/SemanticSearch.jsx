@@ -1,5 +1,5 @@
-import React, { useState } from 'react';
-import { Search, Sparkles, Pin, Send, HelpCircle } from 'lucide-react';
+import React, { useState, useEffect } from 'react';
+import { Search, Sparkles, Pin, Send, ShieldAlert, Heart, Calendar } from 'lucide-react';
 
 const SUGGESTIONS = [
   "frequent urination and excessive thirst",
@@ -11,8 +11,24 @@ const SUGGESTIONS = [
 export default function SemanticSearch({ onSearchExecuted, onSendToChat, backendUrl }) {
   const [searchQuery, setSearchQuery] = useState("");
   const [results, setResults] = useState([]);
+  const [graphContext, setGraphContext] = useState(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
+
+  // Feature 5 - Debounced Live Search
+  useEffect(() => {
+    if (!searchQuery.trim()) {
+      setResults([]);
+      setGraphContext(null);
+      return;
+    }
+
+    const timer = setTimeout(() => {
+      handleSearch(searchQuery);
+    }, 450); // 450ms debounce time
+
+    return () => clearTimeout(timer);
+  }, [searchQuery]);
 
   const handleSearch = async (queryText) => {
     const q = queryText || searchQuery;
@@ -20,7 +36,6 @@ export default function SemanticSearch({ onSearchExecuted, onSendToChat, backend
 
     setLoading(true);
     setError(null);
-    setSearchQuery(q);
 
     try {
       const response = await fetch(`${backendUrl}/search/vector`, {
@@ -34,87 +49,124 @@ export default function SemanticSearch({ onSearchExecuted, onSendToChat, backend
 
       if (!response.ok) {
         const errDetail = await response.json();
-        throw new Error(errDetail.detail || "Vector search query failed.");
+        throw new Error(errDetail?.detail || "Vector search query failed.");
       }
 
       const data = await response.json();
-      setResults(data.table || []);
+      const safeTable = data?.table ?? [];
+      const safeGraph = {
+        nodes: data?.graph?.nodes ?? [],
+        links: data?.graph?.links ?? []
+      };
+      
+      setResults(safeTable);
+      setGraphContext(safeGraph);
       
       if (onSearchExecuted) {
-        // Send graph structure to the parent to draw/highlight
-        onSearchExecuted(data.graph, data.table, `Semantic Search: "${q}"`);
+        onSearchExecuted(safeGraph, safeTable, `Semantic Search: "${q}"`);
       }
     } catch (err) {
       console.error(err);
-      setError(err.message);
+      setError(err.message || "An unexpected error occurred during search.");
     } finally {
       setLoading(false);
     }
   };
 
+  // Extract patients diagnosed with the disease from returned graph
+  const getDiagnosedPatients = (diseaseName) => {
+    if (!graphContext || !graphContext.nodes) return [];
+    
+    // Find disease node id
+    const diseaseNode = graphContext.nodes.find(
+      n => n && n.group === 'Disease' && n.label === diseaseName
+    );
+    if (!diseaseNode) return [];
+
+    // Find patients connected to this disease node
+    const connectedPatientIds = (graphContext.links ?? [])
+      .filter(l => {
+        if (!l) return false;
+        const sourceId = typeof l.source === 'object' ? l.source?.id : l.source;
+        const targetId = typeof l.target === 'object' ? l.target?.id : l.target;
+        return sourceId === diseaseNode.id || targetId === diseaseNode.id;
+      })
+      .map(l => {
+        const sourceId = typeof l.source === 'object' ? l.source?.id : l.source;
+        const targetId = typeof l.target === 'object' ? l.target?.id : l.target;
+        return sourceId === diseaseNode.id ? targetId : sourceId;
+      });
+
+    return graphContext.nodes.filter(
+      n => n && n.group === 'Patient' && connectedPatientIds.includes(n.id)
+    );
+  };
+
   return (
-    <div className="glass-panel" style={{ display: 'flex', flexDirection: 'column', gap: '14px', height: '100%' }}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: '8px', borderBottom: '1px solid var(--border-color)', paddingBottom: '10px' }}>
-        <Sparkles size={18} color="var(--accent-blue)" />
-        <h4 style={{ margin: 0, fontSize: '14px', fontWeight: 600, color: '#FFF' }}>Semantic Vector Search</h4>
+    <div className="medical-card" style={{ display: 'flex', flexDirection: 'column', gap: '20px', background: '#FFFFFF' }}>
+      
+      {/* Header */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: '10px', borderBottom: '1px solid var(--border-color)', paddingBottom: '12px' }}>
+        <Sparkles size={20} color="var(--primary-navy)" />
+        <h4 style={{ margin: 0, fontSize: '16px', fontWeight: 700, color: 'var(--primary-navy)' }}>Semantic Patient Search</h4>
       </div>
 
-      <p style={{ fontSize: '12px', color: 'var(--text-secondary)', lineHeight: 1.4 }}>
-        Query disease and drug descriptions in plain English. The vector index performs cosine similarity search.
+      <p style={{ fontSize: '13px', color: 'var(--text-muted)', lineHeight: 1.5 }}>
+        Query disease symptoms or classifications in plain English. The grounded system translates phrases to clinical indices using Neo4j cosine similarity.
       </p>
 
       {/* Input */}
-      <div style={{ display: 'flex', gap: '8px' }}>
+      <div style={{ display: 'flex', gap: '12px' }}>
         <div style={{ position: 'relative', flex: 1 }}>
-          <Search size={16} color="var(--text-secondary)" style={{
+          <Search size={18} color="var(--text-light)" style={{
             position: 'absolute',
-            left: '12px',
+            left: '14px',
             top: '50%',
             transform: 'translateY(-50%)',
             pointerEvents: 'none'
           }} />
           <input
             type="text"
-            className="input-text"
-            placeholder="Type symptoms (e.g. cough and fever)..."
+            className="medical-input"
+            placeholder="Search symptoms, diseases, or medical profiles (e.g. chest pain)..."
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
-            onKeyDown={(e) => e.key === 'Enter' && handleSearch()}
             style={{
-              width: '100%',
-              paddingLeft: '36px'
+              paddingLeft: '44px'
             }}
           />
         </div>
-        <button 
-          className="btn-primary" 
-          onClick={() => handleSearch()}
-          disabled={loading}
-          style={{ padding: '0 16px', fontSize: '12px' }}
-        >
-          {loading ? "Searching..." : "Search"}
-        </button>
       </div>
 
       {/* Suggestions */}
-      <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px', alignItems: 'center' }}>
-        <span style={{ fontSize: '11px', color: 'var(--text-muted)' }}>Try:</span>
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px', alignItems: 'center' }}>
+        <span style={{ fontSize: '12px', color: 'var(--text-muted)', fontWeight: 500 }}>Common symptom sets:</span>
         {SUGGESTIONS.map((sug, idx) => (
           <button
             key={idx}
-            onClick={() => handleSearch(sug)}
+            onClick={() => {
+              setSearchQuery(sug);
+              handleSearch(sug);
+            }}
             style={{
-              background: 'rgba(255, 255, 255, 0.03)',
-              border: '1px solid rgba(255, 255, 255, 0.05)',
-              borderRadius: '12px',
-              padding: '2px 8px',
-              color: 'var(--text-secondary)',
-              fontSize: '10px',
+              background: '#F1F5F9',
+              border: '1px solid var(--border-color)',
+              borderRadius: '20px',
+              padding: '4px 12px',
+              color: 'var(--primary-navy)',
+              fontSize: '12px',
+              fontWeight: 500,
               cursor: 'pointer',
               transition: 'all 0.2s ease'
             }}
-            onMouseOver={(e) => e.target.style.borderColor = 'rgba(0, 212, 255, 0.3)'}
-            onMouseOut={(e) => e.target.style.borderColor = 'rgba(255, 255, 255, 0.05)'}
+            onMouseOver={(e) => {
+              e.target.style.borderColor = 'var(--primary-navy)';
+              e.target.style.background = '#E2E8F0';
+            }}
+            onMouseOut={(e) => {
+              e.target.style.borderColor = 'var(--border-color)';
+              e.target.style.background = '#F1F5F9';
+            }}
           >
             {sug}
           </button>
@@ -122,91 +174,142 @@ export default function SemanticSearch({ onSearchExecuted, onSendToChat, backend
       </div>
 
       {/* Search Results List */}
-      <div style={{ flex: 1, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '10px', minHeight: '180px' }}>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: '16px', marginTop: '8px' }}>
+        
+        {loading && (
+          <div className="spinner-container">
+            <div className="spinner"></div>
+          </div>
+        )}
+
         {error && (
-          <div style={{ fontSize: '11px', color: 'var(--alert-red)' }}>
-            Error: {error}
+          <div style={{
+            background: 'var(--alert-red-light)',
+            border: '1px solid var(--alert-red)',
+            color: 'var(--alert-red)',
+            borderRadius: '8px',
+            padding: '12px',
+            fontSize: '13px',
+            fontWeight: 500
+          }}>
+            {error}
           </div>
         )}
         
-        {results.length === 0 && !loading && (
+        {results.length === 0 && !loading && !error && (
           <div style={{
             display: 'flex',
             alignItems: 'center',
             justifyContent: 'center',
-            flex: 1,
+            flexDirection: 'column',
             color: 'var(--text-muted)',
-            fontSize: '12px',
-            border: '1px dashed rgba(255, 255, 255, 0.05)',
-            borderRadius: '8px',
-            minHeight: '100px'
+            fontSize: '13px',
+            border: '1.5px dashed var(--border-color)',
+            borderRadius: '12px',
+            padding: '40px',
+            gap: '8px'
           }}>
-            No matches found yet. Type symptoms to start.
+            <Heart size={24} color="var(--text-light)" />
+            <span>Type symptoms or choose a symptom set to find matching clinical records.</span>
           </div>
         )}
 
-        {results.map((res, idx) => (
-          <div key={idx} style={{
-            background: 'rgba(5, 8, 17, 0.5)',
-            border: '1px solid var(--border-color)',
-            borderRadius: '8px',
-            padding: '12px',
-            transition: 'border-color 0.2s ease',
-            display: 'flex',
-            flexDirection: 'column',
-            gap: '6px'
-          }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
-              <div>
-                <span className="badge badge-grounded" style={{ fontSize: '9px', marginRight: '6px' }}>
-                  ICD-10: {res.icd_code}
-                </span>
-                <span style={{ fontWeight: 700, fontSize: '13px', color: '#FFF' }}>
-                  {res.disease_name}
+        {results.map((res, idx) => {
+          const matchingPatients = getDiagnosedPatients(res.disease_name);
+
+          return (
+            <div key={idx} className="medical-card" style={{
+              background: '#FFFFFF',
+              border: '1.5px solid var(--border-color)',
+              display: 'flex',
+              flexDirection: 'column',
+              gap: '12px',
+              padding: '18px 20px'
+            }}>
+              {/* Card Title & Similarity */}
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', flexWrap: 'wrap', gap: '8px' }}>
+                <div>
+                  <span className="med-badge med-badge-red" style={{ marginRight: '8px' }}>
+                    ICD-10: {res.icd_code}
+                  </span>
+                  <span style={{ fontWeight: 800, fontSize: '15px', color: 'var(--primary-navy)' }}>
+                    {res.disease_name}
+                  </span>
+                </div>
+                
+                <span className="med-badge med-badge-green">
+                  {Math.round((res.similarity_score ?? res.similarity ?? 0) * 100)}% Similarity
                 </span>
               </div>
-              <span className="badge badge-grounded" style={{
-                background: 'rgba(46, 213, 115, 0.15)',
-                color: '#2ED573',
-                border: '1px solid rgba(46, 213, 115, 0.3)'
+
+              {/* Description */}
+              <p style={{
+                fontSize: '13px',
+                color: 'var(--text-muted)',
+                lineHeight: 1.5,
+                margin: 0
               }}>
-                {Math.round(res.similarity_score * 100)}% Match
-              </span>
-            </div>
+                {res.description}
+              </p>
 
-            <p style={{
-              fontSize: '11px',
-              color: 'var(--text-secondary)',
-              lineHeight: 1.4,
-              display: '-webkit-box',
-              WebkitLineClamp: 2,
-              WebkitBoxOrient: 'vertical',
-              overflow: 'hidden'
-            }}>
-              {res.description}
-            </p>
+              {/* Connected diagnosed patients */}
+              {matchingPatients.length > 0 && (
+                <div style={{
+                  marginTop: '8px',
+                  borderTop: '1px solid var(--border-color)',
+                  paddingTop: '12px'
+                }}>
+                  <span style={{ fontSize: '11px', fontWeight: 700, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.04em', display: 'block', marginBottom: '8px' }}>
+                    Diagnosed Patients ({matchingPatients.length})
+                  </span>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                    {matchingPatients.map(pat => (
+                      <div key={pat.id} style={{
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'space-between',
+                        background: '#F8FAFC',
+                        border: '1.5px solid var(--border-color)',
+                        borderRadius: '8px',
+                        padding: '8px 12px',
+                        fontSize: '13px'
+                      }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                          <span style={{ fontWeight: 700, color: 'var(--primary-navy)' }}>{pat.label}</span>
+                          <span style={{ color: 'var(--text-muted)' }}>({pat.properties?.age || 'Age N/A'} y.o.)</span>
+                        </div>
+                        <span className="med-badge med-badge-blue" style={{ fontSize: '9px' }}>
+                          ID: {pat.id}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
 
-            <div style={{ display: 'flex', gap: '8px', marginTop: '4px', justifyContent: 'flex-end' }}>
-              <button
-                className="btn-outline"
-                onClick={() => handleSearch(res.disease_name)} // Re-triggers full fetch focusing node
-                style={{ fontSize: '10px', padding: '4px 8px', borderRadius: '4px' }}
-              >
-                <Pin size={10} />
-                Highlight Graph
-              </button>
-              
-              <button
-                className="btn-primary"
-                onClick={() => onSendToChat(res)}
-                style={{ fontSize: '10px', padding: '4px 8px', borderRadius: '4px' }}
-              >
-                <Send size={10} />
-                Analyze with Claude
-              </button>
+              {/* Action Buttons */}
+              <div style={{ display: 'flex', gap: '10px', marginTop: '8px', justifyContent: 'flex-end' }}>
+                <button
+                  className="btn-med-outline"
+                  onClick={() => handleSearch(res.disease_name)}
+                  style={{ fontSize: '11px', padding: '6px 12px', borderRadius: '6px' }}
+                >
+                  <Pin size={12} />
+                  Center Graph
+                </button>
+                
+                <button
+                  className="btn-med-primary"
+                  onClick={() => onSendToChat(res)}
+                  style={{ fontSize: '11px', padding: '6px 12px', borderRadius: '6px' }}
+                >
+                  <Send size={12} />
+                  Analyze Patient Risk
+                </button>
+              </div>
             </div>
-          </div>
-        ))}
+          );
+        })}
       </div>
     </div>
   );

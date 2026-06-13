@@ -1,35 +1,38 @@
 import React, { useState } from 'react';
-import { Play, Code, Database, Table, AlertCircle } from 'lucide-react';
+import { Play, Code, Database, Table, AlertCircle, AlertTriangle, User, FileText, Users, Link } from 'lucide-react';
 
 const PREBUILT_QUERIES = [
   {
     id: 1,
-    title: "Drug-Disease Conflict",
-    description: "Detects patients prescribed a drug contraindicated with their diagnosed disease.",
+    title: "Drug Conflict Detection",
+    icon: <AlertTriangle size={20} color="var(--alert-red)" />,
+    description: "Audit the database to detect patients prescribed a drug that is contraindicated with their diagnosed disease.",
     cypher: `MATCH path1 = (p:Patient)-[:PRESCRIBED]->(m:Medicine)
 WHERE m.name = $medicineName
 WITH p, m, path1
 MATCH path2 = (p)-[:DIAGNOSED_WITH]->(d:Disease)<-[:CONTRAINDICATED_WITH*1..2]-(m)
 RETURN p.name AS patient_name, m.name AS medicine_name, d.name AS conflicting_disease, path1, path2`,
     defaultParams: { medicineName: "Ibuprofen" },
-    paramLabel: "Medicine Name"
+    paramLabel: "Contraindicated Medicine"
   },
   {
     id: 2,
-    title: "Complex Patient History",
-    description: "Retrieves complete drug and disease profiles for patients diagnosed with a specific disease.",
+    title: "Patient Clinical History",
+    icon: <User size={20} color="var(--accent-blue)" />,
+    description: "Retrieve complete diagnostic history, symptom pathway, and drug profiles for patients of a specific disease.",
     cypher: `MATCH path1 = (p:Patient)-[:DIAGNOSED_WITH]->(d:Disease)
 WHERE d.name = $diseaseName
 WITH p, d, path1
 MATCH path2 = (p)-[:PRESCRIBED]->(m:Medicine)
 RETURN p.name AS patient_name, p.age AS patient_age, collect(DISTINCT m.name) AS medicines, collect(DISTINCT d.name) AS diseases, collect(path1) AS paths1, collect(path2) AS paths2`,
     defaultParams: { diseaseName: "Diabetes Mellitus Type 2" },
-    paramLabel: "Disease Name"
+    paramLabel: "Disease Diagnosis"
   },
   {
     id: 3,
     title: "Medicine Network",
-    description: "Traces the prescription grid linking Patients, Drugs, and Target Diseases.",
+    icon: <FileText size={20} color="var(--accent-green)" />,
+    description: "Trace the clinical network linking patient prescriptions, dosages, and target diseases.",
     cypher: `MATCH path = (p:Patient)-[r:PRESCRIBED]->(m:Medicine)-[:TREATS]->(d:Disease)
 RETURN p.name AS patient_name, m.name AS medicine_name, d.name AS disease_name, r.dosage AS dosage, path
 ORDER BY m.name`,
@@ -38,8 +41,9 @@ ORDER BY m.name`,
   },
   {
     id: 4,
-    title: "Doctor Patient Load",
-    description: "Aggregates the volume of unique patients and range of conditions treated per Doctor.",
+    title: "Doctor Workload",
+    icon: <Users size={20} color="var(--accent-yellow)" />,
+    description: "Measure clinical workloads by aggregating patients and unique conditions treated per doctor.",
     cypher: `MATCH path = (doc:Doctor)<-[:TREATED_BY]-(p:Patient)-[:DIAGNOSED_WITH]->(d:Disease)
 RETURN doc.name AS doctor_name, doc.specialization AS specialization, count(p) AS patient_count, collect(DISTINCT d.name) AS diseases_treated, collect(path) AS paths
 ORDER BY patient_count DESC`,
@@ -48,8 +52,9 @@ ORDER BY patient_count DESC`,
   },
   {
     id: 5,
-    title: "Symptom Pathway",
-    description: "Maps symptom sets tracing from Patient to Disease to specific Symptoms.",
+    title: "Symptom Pathways",
+    icon: <Link size={20} color="var(--accent-orange)" />,
+    description: "Map and analyze the biological symptom pathways tracing from Patient to Disease to Symptoms.",
     cypher: `MATCH path = (p:Patient)-[:DIAGNOSED_WITH]->(d:Disease)-[:HAS_SYMPTOM]->(s:Symptom)
 RETURN p.name AS patient_name, d.name AS disease_name, collect(DISTINCT s.name) AS symptoms, collect(path) AS paths`,
     defaultParams: {},
@@ -61,6 +66,7 @@ export default function CypherPanel({ onQueryExecuted, backendUrl }) {
   const [selectedQueryId, setSelectedQueryId] = useState(1);
   const [paramValue, setParamValue] = useState("Ibuprofen");
   const [rawCypher, setRawCypher] = useState(PREBUILT_QUERIES[0].cypher);
+  const [showDeveloperConsole, setShowDeveloperConsole] = useState(false);
   const [tableData, setTableData] = useState([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
@@ -103,18 +109,24 @@ export default function CypherPanel({ onQueryExecuted, backendUrl }) {
 
       if (!response.ok) {
         const errDetail = await response.json();
-        throw new Error(errDetail.detail || "Query execution failed.");
+        throw new Error(errDetail?.detail || "Clinical query execution failed.");
       }
 
       const data = await response.json();
-      setTableData(data.table || []);
+      const safeTable = data?.table ?? [];
+      const safeGraph = {
+        nodes: data?.graph?.nodes ?? [],
+        links: data?.graph?.links ?? []
+      };
+
+      setTableData(safeTable);
       
       if (onQueryExecuted) {
-        onQueryExecuted(data.graph, data.table, `Pre-built Query ${selectedQueryId}`);
+        onQueryExecuted(safeGraph, safeTable, activeQuery ? activeQuery.title : "Clinical Query");
       }
     } catch (err) {
       console.error(err);
-      setError(err.message);
+      setError(err.message || "Query failed. Please verify credentials or database state.");
     } finally {
       setLoading(false);
     }
@@ -137,18 +149,24 @@ export default function CypherPanel({ onQueryExecuted, backendUrl }) {
 
       if (!response.ok) {
         const errDetail = await response.json();
-        throw new Error(errDetail.detail || "Query execution failed.");
+        throw new Error(errDetail?.detail || "Custom Cypher command failed.");
       }
 
       const data = await response.json();
-      setTableData(data.table || []);
+      const safeTable = data?.table ?? [];
+      const safeGraph = {
+        nodes: data?.graph?.nodes ?? [],
+        links: data?.graph?.links ?? []
+      };
+
+      setTableData(safeTable);
       
       if (onQueryExecuted) {
-        onQueryExecuted(data.graph, data.table, "Raw Cypher Query");
+        onQueryExecuted(safeGraph, safeTable, "Raw Console Query");
       }
     } catch (err) {
       console.error(err);
-      setError(err.message);
+      setError(err.message || "Custom Cypher failed.");
     } finally {
       setLoading(false);
     }
@@ -158,153 +176,201 @@ export default function CypherPanel({ onQueryExecuted, backendUrl }) {
   const tableHeaders = tableData.length > 0 ? Object.keys(tableData[0]) : [];
 
   return (
-    <div className="glass-panel" style={{ display: 'flex', flexDirection: 'column', gap: '16px', height: '100%' }}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: '8px', borderBottom: '1px solid var(--border-color)', paddingBottom: '10px' }}>
-        <Database size={18} color="var(--accent-blue)" />
-        <h4 style={{ margin: 0, fontSize: '14px', fontWeight: 600, color: '#FFF' }}>Cypher Query Console</h4>
+    <div className="medical-card" style={{ display: 'flex', flexDirection: 'column', gap: '20px', background: '#FFFFFF' }}>
+      
+      {/* Header Panel */}
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', borderBottom: '1px solid var(--border-color)', paddingBottom: '12px' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+          <Database size={20} color="var(--primary-navy)" />
+          <h4 style={{ margin: 0, fontSize: '16px', fontWeight: 700, color: 'var(--primary-navy)' }}>Pre-built Clinical Audits</h4>
+        </div>
+        <button 
+          onClick={() => setShowDeveloperConsole(!showDeveloperConsole)}
+          style={{
+            background: 'none',
+            border: 'none',
+            color: 'var(--text-muted)',
+            cursor: 'pointer',
+            fontSize: '12px',
+            fontWeight: 600,
+            textDecoration: 'underline'
+          }}
+        >
+          {showDeveloperConsole ? "Hide Developer Console" : "Show Developer Console"}
+        </button>
       </div>
 
-      {/* Pre-built Selector Grid */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5, 1fr)', gap: '8px' }}>
-        {PREBUILT_QUERIES.map((q) => (
-          <button
-            key={q.id}
-            onClick={() => handleSelectPrebuilt(q)}
-            style={{
-              padding: '8px 4px',
-              borderRadius: '6px',
-              border: selectedQueryId === q.id ? '1px solid var(--accent-blue)' : '1px solid rgba(255, 255, 255, 0.05)',
-              background: selectedQueryId === q.id ? 'rgba(0, 212, 255, 0.1)' : 'rgba(5, 8, 17, 0.4)',
-              color: selectedQueryId === q.id ? 'var(--accent-blue)' : 'var(--text-secondary)',
-              cursor: 'pointer',
-              fontSize: '11px',
-              fontWeight: 600,
-              textAlign: 'center',
-              whiteSpace: 'nowrap',
-              overflow: 'hidden',
-              textOverflow: 'ellipsis',
-              transition: 'all 0.2s ease'
-            }}
-            title={q.title}
-          >
-            Q{q.id}: {q.title.split(' ')[0]}
-          </button>
-        ))}
-      </div>
-
-      {/* Query Detail & Parameter */}
-      {currentQuery && (
-        <div style={{
-          background: 'rgba(5, 8, 17, 0.3)',
-          border: '1px solid rgba(255, 255, 255, 0.03)',
-          borderRadius: '8px',
-          padding: '10px 12px',
-          fontSize: '12px'
-        }}>
-          <p style={{ color: '#FFF', fontWeight: 600, marginBottom: '4px' }}>{currentQuery.title}</p>
-          <p style={{ color: 'var(--text-secondary)', lineHeight: 1.4 }}>{currentQuery.description}</p>
-          
-          {currentQuery.paramLabel && (
-            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginTop: '10px' }}>
-              <span style={{ color: 'var(--text-secondary)', fontSize: '11px' }}>{currentQuery.paramLabel}:</span>
-              <input
-                type="text"
-                className="input-text"
-                value={paramValue}
-                onChange={(e) => {
-                  setParamValue(e.target.value);
-                  // Update parameter values inside rawCypher too for display purposes
-                }}
-                style={{
-                  padding: '4px 8px',
-                  fontSize: '12px',
-                  flex: '1',
-                  maxWidth: '200px'
-                }}
-              />
+      {/* Grid of Query Cards */}
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr', gap: '12px' }}>
+        {PREBUILT_QUERIES.map((q) => {
+          const isActive = selectedQueryId === q.id;
+          return (
+            <div 
+              key={q.id}
+              onClick={() => handleSelectPrebuilt(q)}
+              style={{
+                border: isActive ? '2px solid var(--primary-navy)' : '1px solid var(--border-color)',
+                borderRadius: '8px',
+                padding: '14px 16px',
+                cursor: 'pointer',
+                background: isActive ? '#F8FAFC' : '#FFFFFF',
+                transition: 'all 0.2s ease',
+                display: 'flex',
+                gap: '12px',
+                alignItems: 'flex-start'
+              }}
+            >
+              <div style={{
+                background: isActive ? '#FFFFFF' : '#F1F5F9',
+                padding: '10px',
+                borderRadius: '8px',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                border: '1px solid var(--border-color)'
+              }}>
+                {q.icon}
+              </div>
+              <div style={{ flex: 1 }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                  <span style={{ fontWeight: 700, fontSize: '14px', color: 'var(--primary-navy)' }}>{q.title}</span>
+                  {isActive && <span className="med-badge med-badge-blue" style={{ fontSize: '9px' }}>Selected</span>}
+                </div>
+                <p style={{ fontSize: '12px', color: 'var(--text-muted)', marginTop: '4px', lineHeight: 1.4 }}>
+                  {q.description}
+                </p>
+                
+                {/* Embedded parameters & run controls inside selected card */}
+                {isActive && (
+                  <div 
+                    onClick={(e) => e.stopPropagation()} // Prevent card deselection
+                    style={{
+                      marginTop: '12px',
+                      paddingTop: '12px',
+                      borderTop: '1px solid var(--border-color)',
+                      display: 'flex',
+                      flexWrap: 'wrap',
+                      gap: '12px',
+                      alignItems: 'center',
+                      justifyContent: 'space-between'
+                    }}
+                  >
+                    {q.paramLabel ? (
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flex: 1, minWidth: '200px' }}>
+                        <span style={{ color: 'var(--text-muted)', fontSize: '12px', fontWeight: 600 }}>{q.paramLabel}:</span>
+                        <input
+                          type="text"
+                          className="medical-input"
+                          value={paramValue}
+                          onChange={(e) => setParamValue(e.target.value)}
+                          style={{
+                            padding: '6px 12px',
+                            fontSize: '13px',
+                            flex: 1
+                          }}
+                        />
+                      </div>
+                    ) : (
+                      <div style={{ flex: 1 }}></div>
+                    )}
+                    
+                    <button 
+                      className="btn-med-primary" 
+                      onClick={handleExecute}
+                      disabled={loading}
+                      style={{ padding: '6px 14px', fontSize: '12px', borderRadius: '6px' }}
+                    >
+                      <Play size={12} />
+                      {loading ? "Running..." : "Run Audit"}
+                    </button>
+                  </div>
+                )}
+              </div>
             </div>
-          )}
+          );
+        })}
+      </div>
+
+      {/* Advanced Developer Console (Collapsible) */}
+      {showDeveloperConsole && (
+        <div style={{
+          background: '#F8FAFC',
+          padding: '16px',
+          borderRadius: '8px',
+          border: '1.5px solid var(--border-color)',
+          display: 'flex',
+          flexDirection: 'column',
+          gap: '10px'
+        }}>
+          <span style={{ fontSize: '11px', fontWeight: 700, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.04em' }}>
+            Advanced Query Developer Mode
+          </span>
+          <textarea
+            className="medical-input"
+            value={rawCypher}
+            onChange={(e) => setRawCypher(e.target.value)}
+            placeholder="MATCH (n) RETURN n LIMIT 10..."
+            rows={5}
+            style={{
+              fontFamily: 'monospace',
+              fontSize: '12px',
+              background: '#FFFFFF',
+              color: 'var(--text-dark)'
+            }}
+          />
+          <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
+            <button 
+              className="btn-med-outline" 
+              onClick={handleRunRaw}
+              disabled={loading}
+              style={{ fontSize: '11px', padding: '6px 12px', borderRadius: '6px' }}
+            >
+              <Code size={12} />
+              {loading ? "Running..." : "Execute Raw Cypher"}
+            </button>
+          </div>
         </div>
       )}
 
-      {/* Editor & Execution Buttons */}
-      <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-        <textarea
-          className="cypher-console"
-          value={rawCypher}
-          onChange={(e) => setRawCypher(e.target.value)}
-          placeholder="MATCH (n) RETURN n LIMIT 10..."
-          rows={5}
-        />
-        
-        <div style={{ display: 'flex', gap: '10px', justifyContent: 'flex-end' }}>
-          {selectedQueryId && (
-            <button 
-              className="btn-primary" 
-              onClick={handleExecute}
-              disabled={loading}
-              style={{ fontSize: '12px', padding: '8px 14px' }}
-            >
-              <Play size={14} />
-              {loading ? "Running..." : "Run Pre-built"}
-            </button>
-          )}
-          <button 
-            className="btn-outline" 
-            onClick={handleRunRaw}
-            disabled={loading}
-            style={{ fontSize: '12px', padding: '8px 14px' }}
-          >
-            <Code size={14} />
-            {loading ? "Running..." : "Run Raw Console"}
-          </button>
+      {/* Loaders and Errors */}
+      {loading && tableData.length === 0 && (
+        <div className="spinner-container">
+          <div className="spinner"></div>
         </div>
-      </div>
+      )}
 
-      {/* Errors */}
       {error && (
         <div style={{
-          background: 'rgba(255, 71, 87, 0.1)',
-          border: '1px solid rgba(255, 71, 87, 0.2)',
+          background: 'var(--alert-red-light)',
+          border: '1.5px solid var(--alert-red)',
           color: 'var(--alert-red)',
-          borderRadius: '6px',
-          padding: '10px 12px',
-          fontSize: '12px',
+          borderRadius: '8px',
+          padding: '10px 14px',
+          fontSize: '13px',
           display: 'flex',
           gap: '8px',
-          alignItems: 'center'
+          alignItems: 'center',
+          fontWeight: 500
         }}>
           <AlertCircle size={16} style={{ flexShrink: 0 }} />
           <span>{error}</span>
         </div>
       )}
 
-      {/* Tabular Results */}
-      <div style={{ flex: 1, minHeight: '150px', display: 'flex', flexDirection: 'column' }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '12px', color: 'var(--text-secondary)', marginBottom: '8px' }}>
-          <Table size={14} />
-          <span>Results Table ({tableData.length} rows)</span>
-        </div>
-        
-        <div className="results-table-container" style={{ flex: 1, background: '#05070c', maxHeight: '180px' }}>
-          {tableData.length === 0 ? (
-            <div style={{
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              height: '100%',
-              minHeight: '100px',
-              color: 'var(--text-muted)',
-              fontSize: '12px'
-            }}>
-              No results to display. Run query.
-            </div>
-          ) : (
-            <table className="results-table">
+      {/* Tabular Results Display */}
+      {tableData.length > 0 && (
+        <div style={{ display: 'flex', flexDirection: 'column', marginTop: '10px' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '13px', color: 'var(--text-muted)', marginBottom: '10px', fontWeight: 600 }}>
+            <Table size={16} />
+            <span>Audit Findings ({tableData.length} entries matched)</span>
+          </div>
+          
+          <div className="med-table-container" style={{ maxHeight: '240px' }}>
+            <table className="med-table">
               <thead>
                 <tr>
                   {tableHeaders.map((header) => (
-                    <th key={header}>{header.replace('_', ' ')}</th>
+                    <th key={header}>{header.replace(/_/g, ' ')}</th>
                   ))}
                 </tr>
               </thead>
@@ -312,19 +378,19 @@ export default function CypherPanel({ onQueryExecuted, backendUrl }) {
                 {tableData.map((row, idx) => (
                   <tr key={idx}>
                     {tableHeaders.map((header) => (
-                      <td key={header} title={String(row[header])}>
-                        {Array.isArray(row[header]) 
+                      <td key={header} title={row && row[header] != null ? String(row[header]) : ''}>
+                        {row && Array.isArray(row[header]) 
                           ? row[header].join(', ') 
-                          : String(row[header])}
+                          : (row && row[header] != null ? String(row[header]) : '')}
                       </td>
                     ))}
                   </tr>
                 ))}
               </tbody>
             </table>
-          )}
+          </div>
         </div>
-      </div>
+      )}
     </div>
   );
 }

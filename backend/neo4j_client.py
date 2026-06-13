@@ -256,11 +256,11 @@ class Neo4jClient:
         """
         cypher = """
         CALL db.index.vector.queryNodes('disease_embeddings', $limit, $queryEmbedding)
-        YIELD node, similarity
-        WITH node, similarity
+        YIELD node, score
+        WITH node, score
         OPTIONAL MATCH path1 = (node)-[:HAS_SYMPTOM]->(s:Symptom)
         OPTIONAL MATCH path2 = (p:Patient)-[:DIAGNOSED_WITH]->(node)
-        RETURN node, similarity, collect(path1) AS symptom_paths, collect(path2) AS patient_paths
+        RETURN node, score, collect(path1) AS symptom_paths, collect(path2) AS patient_paths
         """
         
         with self.driver.session() as session:
@@ -275,7 +275,7 @@ class Neo4jClient:
                     "disease_name": disease.get("name"),
                     "icd_code": disease.get("icd_code"),
                     "description": disease.get("description"),
-                    "similarity_score": round(r["similarity"], 4)
+                    "similarity_score": round(r["score"], 4)
                 })
             
             # Parse graph data
